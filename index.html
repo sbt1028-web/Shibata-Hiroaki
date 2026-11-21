@@ -1,100 +1,992 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>AR Mini Town - 空間情報コンピューティング 第6回課題</title>
-  <!-- A-Frame と AR.js（A-Frame版・マーカーベースAR） -->
-  <script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar.js"></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>VR街あるき ― 蟻から巨人まで（A-Frame）</title>
+  <meta name="description" content="A-Frameで作成した、Google Cardboard対応のVR散策コンテンツ">
+  <script src="https://aframe.io/releases/1.8.0/aframe.min.js"></script>
   <style>
-    body { margin: 0; overflow: hidden; font-family: sans-serif; }
-    #ui {
-      position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
-      display: flex; flex-direction: column; align-items: center; gap: 8px;
-      padding: 12px; pointer-events: none;
+    html, body { margin: 0; height: 100%; font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic", Meiryo, sans-serif; }
+    #intro {
+      position: fixed; inset: 0; z-index: 10;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(18, 28, 40, 0.78); color: #fff;
     }
-    #status {
-      background: rgba(0, 0, 0, 0.65); color: #fff; padding: 6px 14px;
-      border-radius: 16px; font-size: 14px;
+    #intro .card {
+      max-width: 560px; margin: 16px; padding: 24px 28px; border-radius: 14px;
+      background: rgba(255, 255, 255, 0.08); line-height: 1.7;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.35);
     }
-    #status.found { background: rgba(20, 140, 80, 0.85); }
-    #colorBtn {
-      pointer-events: auto; border: none; border-radius: 20px; padding: 10px 18px;
-      font-size: 15px; background: #ffffff; color: #222; box-shadow: 0 2px 6px rgba(0,0,0,.3);
+    #intro h1 { margin: 0 0 6px; font-size: 1.45rem; }
+    #intro .sub { margin: 0 0 14px; opacity: 0.8; font-size: 0.9rem; }
+    #intro ul { margin: 0 0 18px; padding-left: 1.2em; font-size: 0.95rem; }
+    #intro button {
+      font: inherit; font-size: 1.05rem; font-weight: bold;
+      padding: 12px 28px; border: 0; border-radius: 999px;
+      background: #ffb547; color: #1d2633; cursor: pointer;
     }
+    #intro.hidden { display: none; }
   </style>
 </head>
 <body>
-  <div id="ui">
-    <div id="status">マーカーをカメラに映してください</div>
-    <button id="colorBtn">ピンの色を変える</button>
+
+<div id="intro">
+  <div class="card">
+    <h1>VR街あるき ― 蟻から巨人まで</h1>
+    <p class="sub">空間情報コンピューティング 第7回課題 ／ A-Frame 1.8.0</p>
+    <ul>
+      <li>頭（スマホ）を動かすか、マウスでドラッグして見回す</li>
+      <li><b>光る柱</b>を見つめる（約1.5秒）かクリックすると、その場所へ移動</li>
+      <li><b>足元を見る</b>とメニュー。蟻・人・巨人の視点、昼／夜、環境音を切替</li>
+      <li><b>「i」マーク</b>を見つめると解説が出ます</li>
+      <li>右下のゴーグルボタンでVR（Cardboard）表示 ／ PCはWASDキーでも移動可</li>
+    </ul>
+    <button id="start-btn">体験をはじめる（音が出ます）</button>
   </div>
+</div>
 
-  <a-scene embedded
-           arjs="sourceType: webcam; debugUIEnabled: false; detectionMode: mono_and_matrix; matrixCodeType: 3x3;"
-           vr-mode-ui="enabled: false"
-           renderer="logarithmicDepthBuffer: true; antialias: true;">
+<script>
+/* =====================================================================
+   共通ユーティリティ
+   ===================================================================== */
+const THREE = AFRAME.THREE;
+const FONT = '"Hiragino Sans","Noto Sans JP","Noto Sans CJK JP","Yu Gothic",Meiryo,sans-serif';
 
-    <!-- 自作マーカー（pattern-marker.patt）上にCGを重畳する -->
-    <a-marker id="marker" type="pattern" url="pattern-marker.patt" smooth="true" smoothCount="5">
-      <!-- マーカー1辺=1.0。CG全体をマーカーとほぼ同じ大きさに縮小して配置 -->
-      <a-entity id="content" scale="0.6 0.6 0.6">
+// 再現性のある乱数（毎回同じ街並みになるように）
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
-      <!-- 地面（地図に見立てた板） -->
-      <a-plane rotation="-90 0 0" width="1.6" height="1.6" color="#7BC8A4" opacity="0.75"></a-plane>
-      <a-ring rotation="-90 0 0" position="0 0.01 0" radius-inner="0.72" radius-outer="0.8" color="#2E7D5B"></a-ring>
+function canvasTexture(canvas, repeatX, repeatY, srgb) {
+  const tex = new THREE.CanvasTexture(canvas);
+  if (srgb !== false) tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(repeatX || 1, repeatY || 1);
+  tex.anisotropy = 4;
+  return tex;
+}
 
-      <!-- ミニチュアの街並み（建物） -->
-      <a-box position="-0.45 0.25 -0.4" width="0.3" depth="0.3" height="0.5" color="#4CC3D9"></a-box>
-      <a-box position="-0.05 0.4 -0.5" width="0.25" depth="0.25" height="0.8" color="#F5F5F5"></a-box>
-      <a-box position="0.4 0.15 -0.35" width="0.35" depth="0.3" height="0.3" color="#FFC65D"></a-box>
-      <a-box position="0.45 0.3 0.3" width="0.25" depth="0.25" height="0.6" color="#EF2D5E"></a-box>
-      <a-cylinder position="-0.45 0.1 0.35" radius="0.08" height="0.2" color="#8B5A2B"></a-cylinder>
-      <a-cone position="-0.45 0.35 0.35" radius-bottom="0.2" radius-top="0" height="0.35" color="#2E8B57"></a-cone>
+// 日本語テキストをcanvasに描く（A-Frame標準のa-textは日本語非対応のため）
+function drawTextCanvas(o) {
+  const fs = o.fontSize || 52, pad = o.padding || 30, maxW = o.maxWidth || 1000;
+  const c = document.createElement('canvas'), ctx = c.getContext('2d');
+  const titleFs = Math.round(fs * 1.25);
+  const wrap = (txt, font) => {
+    ctx.font = font;
+    const out = [];
+    txt.split('|').forEach(par => {
+      let line = '';
+      for (const ch of par) {
+        if (ctx.measureText(line + ch).width > maxW - pad * 2 && line) { out.push(line); line = ch; }
+        else line += ch;
+      }
+      out.push(line);
+    });
+    return out;
+  };
+  const bodyFont = `${fs}px ${FONT}`, titleFont = `bold ${titleFs}px ${FONT}`;
+  const titleLines = o.title ? wrap(o.title, titleFont) : [];
+  const lines = o.text ? wrap(o.text, bodyFont) : [];
+  let w = 0;
+  ctx.font = titleFont; titleLines.forEach(l => w = Math.max(w, ctx.measureText(l).width));
+  ctx.font = bodyFont; lines.forEach(l => w = Math.max(w, ctx.measureText(l).width));
+  const lhT = titleFs * 1.35, lhB = fs * 1.45;
+  c.width = Math.ceil(o.fixedWidth || (w + pad * 2));
+  c.height = Math.ceil(pad * 2 + titleLines.length * lhT + (titleLines.length && lines.length ? fs * 0.4 : 0) + lines.length * lhB);
+  if (o.fixedHeight) c.height = o.fixedHeight;
+  // 背景（角丸）
+  const r = Math.min(36, c.height / 2);
+  ctx.fillStyle = o.bg || 'rgba(255,255,255,0.93)';
+  ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(2, 2, c.width - 4, c.height - 4, r); else ctx.rect(2, 2, c.width - 4, c.height - 4); ctx.fill();
+  if (o.border) { ctx.lineWidth = 6; ctx.strokeStyle = o.border; ctx.stroke(); }
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = o.align === 'left' ? 'left' : 'center';
+  const x = o.align === 'left' ? pad : c.width / 2;
+  const blockH = titleLines.length * lhT + (titleLines.length && lines.length ? fs * 0.4 : 0) + lines.length * lhB;
+  let y = (c.height - blockH) / 2;
+  ctx.fillStyle = o.titleColor || o.color || '#1d2633'; ctx.font = titleFont;
+  titleLines.forEach(l => { ctx.fillText(l, x, y + lhT / 2); y += lhT; });
+  if (titleLines.length && lines.length) y += fs * 0.4;
+  ctx.fillStyle = o.color || '#1d2633'; ctx.font = bodyFont;
+  lines.forEach(l => { ctx.fillText(l, x, y + lhB / 2); y += lhB; });
+  return c;
+}
 
-      <!-- 位置ピン（上下に弾みながら回転する） -->
-      <a-entity id="pin" position="0 0.9 0"
-                animation__bounce="property: position; from: 0 0.9 0; to: 0 1.15 0; dir: alternate; dur: 900; loop: true; easing: easeInOutSine"
-                animation__spin="property: rotation; to: 0 360 0; dur: 4000; loop: true; easing: linear">
-        <a-sphere id="pinHead" radius="0.22" position="0 0.2 0" color="#E53935"></a-sphere>
-        <a-cone id="pinTip" radius-bottom="0.18" radius-top="0.0" height="0.45" position="0 -0.1 0" rotation="180 0 0" color="#E53935"></a-cone>
-        <a-sphere radius="0.08" position="0 0.2 0.18" color="#FFFFFF"></a-sphere>
+// 昼夜の切替を受け取る関数の登録先（t=0:昼 → t=1:夜）
+const NIGHT = { fns: [], add(fn) { this.fns.push(fn); fn(0); }, apply(t) { this.fns.forEach(f => f(t)); } };
+const $id = id => document.getElementById(id);
+const lerp = (a, b, t) => a + (b - a) * t;
+const lerpColor = (a, b, t) => new THREE.Color(a).lerp(new THREE.Color(b), t);
+
+/* =====================================================================
+   サウンド（効果音・位置に応じて聞こえ方が変わる立体音響）
+   音声ファイルを使わず、Web Audioで波形を生成する
+   ===================================================================== */
+const SOUND = {
+  listener: null, enabled: true, ready: false, sources: [],
+  init(cameraObj) {
+    if (this.listener) return;
+    this.listener = new THREE.AudioListener();
+    cameraObj.add(this.listener);
+  },
+  ctx() { return this.listener && this.listener.context; },
+  resume() { const c = this.ctx(); if (c && c.state !== 'running') c.resume(); this.ready = true; },
+  // 水の音（フィルタをかけたノイズ）
+  waterBuffer() {
+    const c = this.ctx(), len = c.sampleRate * 3, b = c.createBuffer(1, len, c.sampleRate), d = b.getChannelData(0);
+    let lp = 0, lp2 = 0;
+    for (let i = 0; i < len; i++) {
+      const n = Math.random() * 2 - 1;
+      lp += (n - lp) * 0.18; lp2 += (lp - lp2) * 0.3;
+      const fade = Math.min(1, i / 2000, (len - i) / 2000);
+      d[i] = (lp2 * 0.9 + (Math.random() < 0.002 ? (Math.random() - 0.5) * 0.6 : 0)) * fade;
+    }
+    return b;
+  },
+  // 鳥のさえずり（周波数を素早く上下させた短い音）
+  birdBuffer() {
+    const c = this.ctx(), sr = c.sampleRate, len = Math.floor(sr * 0.9), b = c.createBuffer(1, len, sr), d = b.getChannelData(0);
+    let ph = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr, k = Math.floor(t / 0.15), lt = t - k * 0.15;
+      const on = k % 2 === 0 || k === 3 ? 1 : 0;
+      const f = 2600 + 1400 * Math.sin(lt * 70) + (k * 180);
+      ph += 2 * Math.PI * f / sr;
+      const env = on * Math.sin(Math.PI * Math.min(1, lt / 0.12)) ** 2;
+      d[i] = Math.sin(ph) * env * 0.35;
+    }
+    return b;
+  },
+  // UIの効果音
+  blip(freq) {
+    const c = this.ctx(); if (!c || !this.ready) return;
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(freq || 880, c.currentTime);
+    o.frequency.exponentialRampToValueAtTime((freq || 880) * 1.5, c.currentTime + 0.08);
+    g.gain.setValueAtTime(0.18, c.currentTime); g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.2);
+    o.connect(g).connect(c.destination); o.start(); o.stop(c.currentTime + 0.22);
+  },
+  setEnabled(on) {
+    this.enabled = on;
+    if (this.listener) this.listener.setMasterVolume(on ? 1 : 0);
+  }
+};
+
+/* =====================================================================
+   コンポーネント：表示系
+   ===================================================================== */
+
+// 日本語ラベル（板ポリゴンにcanvasを貼る）
+AFRAME.registerComponent('jp-label', {
+  schema: {
+    text: { default: '' }, title: { default: '' }, width: { default: 1.6 },
+    fontSize: { default: 52 }, color: { default: '#1d2633' }, bg: { default: 'rgba(255,255,255,0.93)' },
+    border: { default: '' }, align: { default: 'center' }, billboard: { default: false }, maxWidth: { default: 1000 }
+  },
+  update() {
+    const d = this.data;
+    const c = drawTextCanvas({ text: d.text, title: d.title, fontSize: d.fontSize, color: d.color, bg: d.bg, border: d.border, align: d.align, maxWidth: d.maxWidth });
+    const tex = canvasTexture(c, 1, 1); tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+    const h = d.width * c.height / c.width;
+    if (this.mesh) { this.mesh.geometry.dispose(); this.mesh.material.map.dispose(); this.mesh.material.dispose(); }
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(d.width, h),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, alphaTest: 0.02, side: THREE.DoubleSide, fog: false }));
+    this.el.setObject3D('mesh', this.mesh);
+  },
+  tick() {
+    if (!this.data.billboard) return;
+    const cam = this.el.sceneEl.camera; if (!cam) return;
+    const cp = new THREE.Vector3(), p = new THREE.Vector3();
+    cam.getWorldPosition(cp); this.el.object3D.getWorldPosition(p);
+    this.el.object3D.rotation.y = Math.atan2(cp.x - p.x, cp.z - p.z);
+  }
+});
+
+// グラデーションの空（昼夜で色が変わる）
+AFRAME.registerComponent('grad-sky', {
+  init() {
+    this.uniforms = {
+      top: { value: new THREE.Color('#3d8fe0') }, bottom: { value: new THREE.Color('#dcebf5') },
+      offset: { value: 20 }, exponent: { value: 0.7 }
+    };
+    const mat = new THREE.ShaderMaterial({
+      uniforms: this.uniforms, side: THREE.BackSide, depthWrite: false, fog: false,
+      vertexShader: 'varying vec3 vP; void main(){ vec4 w = modelMatrix*vec4(position,1.0); vP = w.xyz; gl_Position = projectionMatrix*viewMatrix*w; }',
+      fragmentShader: 'uniform vec3 top; uniform vec3 bottom; uniform float offset; uniform float exponent; varying vec3 vP;' +
+        'void main(){ float h = normalize(vP + vec3(0.0, offset, 0.0)).y; gl_FragColor = vec4(mix(bottom, top, max(pow(max(h,0.0), exponent), 0.0)), 1.0); }'
+    });
+    const sky = new THREE.Mesh(new THREE.SphereGeometry(450, 32, 16), mat);
+    sky.renderOrder = -10;
+    this.el.setObject3D('mesh', sky);
+    // 星
+    const rnd = mulberry32(7), pts = [];
+    for (let i = 0; i < 700; i++) {
+      const th = rnd() * Math.PI * 2, ph = Math.acos(rnd() * 0.95), r = 420;
+      pts.push(r * Math.sin(ph) * Math.cos(th), r * Math.cos(ph), r * Math.sin(ph) * Math.sin(th));
+    }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    const sm = new THREE.PointsMaterial({ color: '#ffffff', size: 2, sizeAttenuation: false, transparent: true, opacity: 0, fog: false, depthWrite: false });
+    this.el.setObject3D('stars', new THREE.Points(g, sm));
+    NIGHT.add(t => {
+      this.uniforms.top.value.copy(lerpColor('#3d8fe0', '#050b1e', t));
+      this.uniforms.bottom.value.copy(lerpColor('#dcebf5', '#1c2a4a', t));
+      sm.opacity = Math.max(0, (t - 0.4) / 0.6);
+    });
+  },
+  tick() {
+    // 空は常にカメラ中心に（巨人視点でも端が見えないように）
+    const cam = this.el.sceneEl.camera; if (!cam) return;
+    cam.getWorldPosition(this.el.object3D.position);
+  }
+});
+
+// 地面などのテクスチャ（芝・石畳・道路）
+const TEX = {};
+function makeTextures() {
+  const rnd = mulberry32(3);
+  // 芝
+  let c = document.createElement('canvas'); c.width = c.height = 256; let x = c.getContext('2d');
+  x.fillStyle = '#6fae55'; x.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 2600; i++) {
+    x.fillStyle = `hsl(${95 + rnd() * 25}, ${35 + rnd() * 25}%, ${30 + rnd() * 22}%)`;
+    x.fillRect(rnd() * 256, rnd() * 256, 2, 2 + rnd() * 4);
+  }
+  TEX.grass = c;
+  // 石畳
+  c = document.createElement('canvas'); c.width = c.height = 256; x = c.getContext('2d');
+  x.fillStyle = '#b9b2a5'; x.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+    x.fillStyle = `hsl(35, ${8 + rnd() * 8}%, ${62 + rnd() * 12}%)`;
+    x.fillRect(i * 64 + 2, j * 64 + 2, 60, 60);
+  }
+  TEX.stone = c;
+  // アスファルト
+  c = document.createElement('canvas'); c.width = c.height = 128; x = c.getContext('2d');
+  x.fillStyle = '#4a4d52'; x.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 900; i++) { x.fillStyle = `rgba(255,255,255,${rnd() * 0.08})`; x.fillRect(rnd() * 128, rnd() * 128, 1.5, 1.5); }
+  TEX.asphalt = c;
+  // センターライン（破線）
+  c = document.createElement('canvas'); c.width = 16; c.height = 64; x = c.getContext('2d');
+  x.clearRect(0, 0, 16, 64); x.fillStyle = '#f4f1e8'; x.fillRect(0, 0, 16, 36);
+  TEX.dash = c;
+  // 横断歩道
+  c = document.createElement('canvas'); c.width = 64; c.height = 16; x = c.getContext('2d');
+  x.clearRect(0, 0, 64, 16); x.fillStyle = '#f4f1e8'; x.fillRect(0, 0, 32, 16);
+  TEX.zebra = c;
+}
+
+AFRAME.registerComponent('textured-plane', {
+  schema: { tex: { default: 'grass' }, w: { default: 10 }, h: { default: 10 }, repeat: { type: 'vec2', default: { x: 1, y: 1 } },
+    transparent: { default: false }, roughness: { default: 0.95 } },
+  init() {
+    if (!TEX.grass) makeTextures();
+    const d = this.data;
+    const mat = new THREE.MeshStandardMaterial({ map: canvasTexture(TEX[d.tex], d.repeat.x, d.repeat.y), roughness: d.roughness,
+      transparent: d.transparent, alphaTest: d.transparent ? 0.3 : 0 });
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(d.w, d.h), mat);
+    m.rotation.x = -Math.PI / 2; m.receiveShadow = true;
+    this.el.setObject3D('mesh', m);
+  }
+});
+
+AFRAME.registerComponent('textured-circle', {
+  schema: { tex: { default: 'stone' }, r: { default: 8 }, repeat: { default: 4 } },
+  init() {
+    if (!TEX.grass) makeTextures();
+    const m = new THREE.Mesh(new THREE.CircleGeometry(this.data.r, 48),
+      new THREE.MeshStandardMaterial({ map: canvasTexture(TEX[this.data.tex], this.data.repeat, this.data.repeat), roughness: 0.9 }));
+    m.rotation.x = -Math.PI / 2; m.receiveShadow = true;
+    this.el.setObject3D('mesh', m);
+  }
+});
+
+/* =====================================================================
+   コンポーネント：街の構成要素
+   ===================================================================== */
+
+// ビル（窓テクスチャ付き。夜は窓が光る）
+function windowCanvases(wallColor, seed) {
+  const rnd = mulberry32(seed), N = 4, U = 64;
+  const a = document.createElement('canvas'), e = document.createElement('canvas');
+  a.width = a.height = e.width = e.height = N * U;
+  const ax = a.getContext('2d'), ex = e.getContext('2d');
+  ax.fillStyle = wallColor; ax.fillRect(0, 0, N * U, N * U);
+  ex.fillStyle = '#000'; ex.fillRect(0, 0, N * U, N * U);
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+    const gx = i * U + 12, gy = j * U + 14, gw = U - 24, gh = U - 26;
+    const grd = ax.createLinearGradient(gx, gy, gx + gw, gy + gh);
+    grd.addColorStop(0, '#9fc1de'); grd.addColorStop(1, '#4f6f8f');
+    ax.fillStyle = grd; ax.fillRect(gx, gy, gw, gh);
+    if (rnd() < 0.62) { ex.fillStyle = rnd() < 0.8 ? '#ffd59a' : '#cfe6ff'; ex.fillRect(gx, gy, gw, gh); }
+  }
+  return [a, e];
+}
+const BUILDING_MATS = [];
+AFRAME.registerComponent('building', {
+  schema: { w: { default: 8 }, d: { default: 8 }, h: { default: 20 }, color: { default: '#d9d4cc' }, seed: { default: 1 } },
+  init() {
+    const { w, d, h, color, seed } = this.data;
+    const [a, e] = windowCanvases(color, seed);
+    const wall = (width) => {
+      const rx = width / 12, ry = h / 12.8;
+      const m = new THREE.MeshStandardMaterial({ map: canvasTexture(a, rx, ry), emissive: new THREE.Color('#ffffff'),
+        emissiveMap: canvasTexture(e, rx, ry), emissiveIntensity: 0, roughness: 0.75, metalness: 0.05 });
+      BUILDING_MATS.push(m); return m;
+    };
+    const roof = new THREE.MeshStandardMaterial({ color: new THREE.Color(color).multiplyScalar(0.7), roughness: 0.9 });
+    const mats = [wall(d), wall(d), roof, roof, wall(w), wall(w)];
+    const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mats);
+    box.position.y = h / 2; box.castShadow = true; box.receiveShadow = true;
+    const grp = new THREE.Group(); grp.add(box);
+    // 屋上の設備
+    const rnd = mulberry32(seed * 13);
+    if (rnd() < 0.7) {
+      const u = new THREE.Mesh(new THREE.BoxGeometry(w * 0.3, 1.4, d * 0.3), new THREE.MeshStandardMaterial({ color: '#9aa0a6' }));
+      u.position.set((rnd() - 0.5) * w * 0.4, h + 0.7, (rnd() - 0.5) * d * 0.4); u.castShadow = true; grp.add(u);
+    }
+    this.el.setObject3D('mesh', grp);
+  }
+});
+NIGHT.add(t => BUILDING_MATS.forEach(m => m.emissiveIntensity = t * 0.95));
+
+// 区画内にビルを並べる
+AFRAME.registerComponent('city-block', {
+  schema: { x0: { default: 0 }, z0: { default: 0 }, x1: { default: 10 }, z1: { default: 10 }, cols: { default: 3 }, rows: { default: 3 },
+    hmin: { default: 6 }, hmax: { default: 30 }, seed: { default: 1 }, fill: { default: 0.75 } },
+  init() {
+    const d = this.data, rnd = mulberry32(d.seed);
+    const colors = ['#d9d4cc', '#c9cfd6', '#e6dccb', '#b9c3c9', '#d7c6b4', '#cbd3c4', '#efe9df'];
+    const cw = (d.x1 - d.x0) / d.cols, rh = (d.z1 - d.z0) / d.rows;
+    for (let i = 0; i < d.cols; i++) for (let j = 0; j < d.rows; j++) {
+      if (rnd() > 0.92) continue;
+      const w = cw * (d.fill + rnd() * 0.12), dep = rh * (d.fill + rnd() * 0.12);
+      const h = Math.round(d.hmin + Math.pow(rnd(), 1.6) * (d.hmax - d.hmin));
+      const b = document.createElement('a-entity');
+      b.setAttribute('position', `${d.x0 + cw * (i + 0.5)} 0 ${d.z0 + rh * (j + 0.5)}`);
+      b.setAttribute('building', { w, d: dep, h, color: colors[Math.floor(rnd() * colors.length)], seed: d.seed * 100 + i * 10 + j });
+      this.el.appendChild(b);
+    }
+  }
+});
+
+// 木（丸い木／針葉樹）
+const treeMats = {};
+function treeMesh(rnd, scale) {
+  if (!treeMats.trunk) {
+    treeMats.trunk = new THREE.MeshStandardMaterial({ color: '#7a5a3c', roughness: 1 });
+    treeMats.leaf = [0, 1, 2].map(i => new THREE.MeshStandardMaterial({ color: ['#3f8a3a', '#4f9e45', '#2f6f3a'][i], roughness: 0.95 }));
+  }
+  const g = new THREE.Group(), s = scale * (0.8 + rnd() * 0.5);
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18 * s, 0.25 * s, 2 * s, 7), treeMats.trunk);
+  trunk.position.y = s; trunk.castShadow = true; g.add(trunk);
+  const mat = treeMats.leaf[Math.floor(rnd() * 3)];
+  if (rnd() < 0.5) {
+    for (let k = 0; k < 3; k++) {
+      const cone = new THREE.Mesh(new THREE.ConeGeometry((1.7 - k * 0.4) * s, 2 * s, 8), mat);
+      cone.position.y = (2.2 + k * 1.1) * s; cone.castShadow = true; g.add(cone);
+    }
+  } else {
+    const ball = new THREE.Mesh(new THREE.IcosahedronGeometry(1.5 * s, 1), mat);
+    ball.position.y = 3 * s; ball.scale.y = 1.1; ball.castShadow = true; g.add(ball);
+    const b2 = new THREE.Mesh(new THREE.IcosahedronGeometry(1.0 * s, 1), mat);
+    b2.position.set(0.8 * s, 2.5 * s, 0.3 * s); b2.castShadow = true; g.add(b2);
+  }
+  g.rotation.y = rnd() * Math.PI * 2;
+  return g;
+}
+AFRAME.registerComponent('forest', {
+  schema: { x0: { default: 0 }, z0: { default: 0 }, x1: { default: 10 }, z1: { default: 10 }, count: { default: 30 }, seed: { default: 1 },
+    clearX: { default: 9999 }, clearZ: { default: 9999 }, clearR: { default: 0 }, scale: { default: 1 } },
+  init() {
+    const d = this.data, rnd = mulberry32(d.seed), grp = new THREE.Group();
+    let n = 0, guard = 0;
+    while (n < d.count && guard++ < d.count * 10) {
+      const x = d.x0 + rnd() * (d.x1 - d.x0), z = d.z0 + rnd() * (d.z1 - d.z0);
+      if (Math.hypot(x - d.clearX, z - d.clearZ) < d.clearR) continue;
+      const t = treeMesh(rnd, d.scale); t.position.set(x, 0, z); grp.add(t); n++;
+    }
+    this.el.setObject3D('mesh', grp);
+  }
+});
+AFRAME.registerComponent('tree', {
+  schema: { seed: { default: 1 }, scale: { default: 1 } },
+  init() { this.el.setObject3D('mesh', treeMesh(mulberry32(this.data.seed), this.data.scale)); }
+});
+
+// 車（形はプログラムで作成）
+AFRAME.registerComponent('car', {
+  schema: { color: { default: '#d84a3a' } },
+  init() {
+    const g = new THREE.Group();
+    const body = new THREE.MeshStandardMaterial({ color: this.data.color, roughness: 0.35, metalness: 0.3 });
+    const dark = new THREE.MeshStandardMaterial({ color: '#22272e', roughness: 0.6 });
+    const glass = new THREE.MeshStandardMaterial({ color: '#2b3d52', roughness: 0.1, metalness: 0.6 });
+    const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; g.add(m); return m; };
+    add(new THREE.BoxGeometry(1.8, 0.6, 4.1), body, 0, 0.65, 0);
+    add(new THREE.BoxGeometry(1.6, 0.6, 2.1), glass, 0, 1.25, -0.2);
+    add(new THREE.BoxGeometry(1.62, 0.08, 2.0), body, 0, 1.58, -0.2);
+    [[-0.85, 1.3], [0.85, 1.3], [-0.85, -1.3], [0.85, -1.3]].forEach(([x, z]) => {
+      const w = add(new THREE.CylinderGeometry(0.36, 0.36, 0.3, 14), dark, x, 0.36, z); w.rotation.z = Math.PI / 2;
+    });
+    const head = new THREE.MeshStandardMaterial({ color: '#fff6d8', emissive: '#fff2c0', emissiveIntensity: 0.2 });
+    const tail = new THREE.MeshStandardMaterial({ color: '#c0392b', emissive: '#ff2a1a', emissiveIntensity: 0.1 });
+    add(new THREE.BoxGeometry(0.4, 0.18, 0.05), head, -0.6, 0.75, 2.06); add(new THREE.BoxGeometry(0.4, 0.18, 0.05), head, 0.6, 0.75, 2.06);
+    add(new THREE.BoxGeometry(0.4, 0.15, 0.05), tail, -0.6, 0.8, -2.06); add(new THREE.BoxGeometry(0.4, 0.15, 0.05), tail, 0.6, 0.8, -2.06);
+    NIGHT.add(t => { head.emissiveIntensity = 0.2 + t * 2.5; tail.emissiveIntensity = 0.1 + t * 1.5; });
+    this.el.setObject3D('mesh', g);
+  }
+});
+
+// 経路に沿って自律的に走る（AIP Cubeの「自律性」）
+AFRAME.registerComponent('path-follow', {
+  schema: { points: { default: '0 0, 10 0' }, speed: { default: 7 }, offset: { default: 0 } },
+  init() {
+    this.pts = this.data.points.split(',').map(s => { const [x, z] = s.trim().split(/\s+/).map(Number); return new THREE.Vector2(x, z); });
+    this.lens = this.pts.map((p, i) => p.distanceTo(this.pts[(i + 1) % this.pts.length]));
+    this.total = this.lens.reduce((a, b) => a + b, 0);
+    this.dist = this.data.offset * this.total;
+    this.heading = null;
+  },
+  tick(t, dt) {
+    if (!dt) return;
+    this.dist = (this.dist + this.data.speed * Math.min(dt, 100) / 1000) % this.total;
+    let d = this.dist, i = 0;
+    while (d > this.lens[i]) { d -= this.lens[i]; i++; }
+    const a = this.pts[i], b = this.pts[(i + 1) % this.pts.length], f = d / this.lens[i];
+    const o = this.el.object3D;
+    o.position.x = lerp(a.x, b.x, f); o.position.z = lerp(a.y, b.y, f);
+    const target = Math.atan2(b.x - a.x, b.y - a.y);
+    if (this.heading === null) this.heading = target;
+    let diff = target - this.heading; diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+    this.heading += diff * Math.min(1, dt / 180);
+    o.rotation.y = this.heading;
+  }
+});
+
+// 円を描いて飛ぶ（鳥）
+AFRAME.registerComponent('circle-fly', {
+  schema: { radius: { default: 14 }, speed: { default: 0.35 }, phase: { default: 0 }, y: { default: 16 } },
+  tick(t) {
+    const d = this.data, a = t / 1000 * d.speed + d.phase, o = this.el.object3D;
+    o.position.set(Math.cos(a) * d.radius, d.y + Math.sin(a * 3) * 0.8, Math.sin(a) * d.radius);
+    o.rotation.y = -a;
+    const wing = Math.sin(t / 90 + d.phase * 10) * 0.6;
+    if (this.el.children[0]) this.el.children[0].object3D.rotation.z = wing;
+    if (this.el.children[1]) this.el.children[1].object3D.rotation.z = -wing;
+  }
+});
+
+// 雲がゆっくり流れる
+AFRAME.registerComponent('drift', {
+  schema: { speed: { default: 1.2 }, range: { default: 240 } },
+  tick(t, dt) {
+    if (!dt) return;
+    const o = this.el.object3D; o.position.x += this.data.speed * dt / 1000;
+    if (o.position.x > this.data.range / 2) o.position.x -= this.data.range;
+  }
+});
+AFRAME.registerComponent('cloud', {
+  schema: { seed: { default: 1 } },
+  init() {
+    const rnd = mulberry32(this.data.seed), g = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 1, emissive: '#ffffff', emissiveIntensity: 0.25, transparent: true, opacity: 0.95 });
+    for (let i = 0; i < 6; i++) {
+      const s = new THREE.Mesh(new THREE.IcosahedronGeometry(3 + rnd() * 3, 1), mat);
+      s.position.set((rnd() - 0.5) * 14, (rnd() - 0.5) * 2, (rnd() - 0.5) * 6); s.scale.y = 0.55; g.add(s);
+    }
+    NIGHT.add(t => { mat.opacity = 0.95 - t * 0.75; mat.emissiveIntensity = 0.25 - t * 0.2; });
+    this.el.setObject3D('mesh', g);
+  }
+});
+
+// 街灯（夜に点灯）
+AFRAME.registerComponent('lamp', {
+  schema: { light: { default: false } },
+  init() {
+    const g = new THREE.Group();
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 3.6, 8), new THREE.MeshStandardMaterial({ color: '#3a3f46', metalness: 0.5, roughness: 0.4 }));
+    pole.position.y = 1.8; pole.castShadow = true; g.add(pole);
+    const bulbMat = new THREE.MeshStandardMaterial({ color: '#fffbe8', emissive: '#ffd27a', emissiveIntensity: 0 });
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.22, 14, 10), bulbMat); bulb.position.y = 3.75; g.add(bulb);
+    let pl = null;
+    if (this.data.light) { pl = new THREE.PointLight('#ffcf80', 0, 14, 1.5); pl.position.y = 3.6; g.add(pl); }
+    NIGHT.add(t => { bulbMat.emissiveIntensity = t * 3; if (pl) pl.intensity = t * 18; });
+    this.el.setObject3D('mesh', g);
+  }
+});
+
+// 太陽光・環境光を昼夜で変える
+AFRAME.registerComponent('day-light', {
+  schema: { day: { default: 1 }, night: { default: 0.1 }, dayColor: { default: '#ffffff' }, nightColor: { default: '#8ea8ff' },
+    dayGround: { default: '' }, nightGround: { default: '' } },
+  init() {
+    NIGHT.add(t => {
+      const l = this.el.getObject3D('light'); if (!l) return;
+      l.intensity = lerp(this.data.day, this.data.night, t);
+      l.color.copy(lerpColor(this.data.dayColor, this.data.nightColor, t));
+      if (l.groundColor && this.data.dayGround) l.groundColor.copy(lerpColor(this.data.dayGround, this.data.nightGround, t));
+    });
+  }
+});
+
+/* =====================================================================
+   コンポーネント：インタラクション（AIP Cubeの「対話性」）
+   ===================================================================== */
+
+// 共通：見つめる／クリックで反応する物体の強調表示
+AFRAME.registerComponent('hover-grow', {
+  schema: { scale: { default: 1.12 } },
+  init() {
+    const o = this.el.object3D, base = o.scale.clone();
+    this.el.addEventListener('mouseenter', () => o.scale.copy(base).multiplyScalar(this.data.scale));
+    this.el.addEventListener('mouseleave', () => o.scale.copy(base));
+  }
+});
+
+// テレポート地点（光る柱を見つめると移動）
+AFRAME.registerComponent('teleport-spot', {
+  schema: { name: { default: '' }, color: { default: '#ffb547' }, face: { default: 0 } },
+  init() {
+    const el = this.el, d = this.data;
+    const g = new THREE.Group();
+    const ringMat = new THREE.MeshBasicMaterial({ color: d.color, transparent: true, opacity: 0.9, side: THREE.DoubleSide });
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.75, 40), ringMat); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.03; g.add(ring);
+    this.pillarMat = new THREE.MeshBasicMaterial({ color: d.color, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide });
+    const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 3, 24, 1, true), this.pillarMat); pillar.position.y = 1.5; g.add(pillar);
+    this.ring = ring; el.setObject3D('mesh', g);
+    // 当たり判定（見つめやすいよう大きめ・不可視）
+    const hit = document.createElement('a-entity');
+    hit.setAttribute('geometry', 'primitive: cylinder; radius: 0.8; height: 3.2');
+    hit.setAttribute('material', 'visible: false');
+    hit.setAttribute('position', '0 1.6 0');
+    hit.classList.add('clickable');
+    el.appendChild(hit);
+    const label = document.createElement('a-entity');
+    label.setAttribute('position', '0 3.5 0');
+    label.setAttribute('jp-label', { text: d.name, width: 1.5, fontSize: 60, bg: 'rgba(29,38,51,0.82)', color: '#ffffff', billboard: true });
+    el.appendChild(label);
+    hit.addEventListener('mouseenter', () => { this.pillarMat.opacity = 0.5; });
+    hit.addEventListener('mouseleave', () => { this.pillarMat.opacity = this.here ? 0.06 : 0.22; });
+    hit.addEventListener('click', () => {
+      const p = new THREE.Vector3(); el.object3D.getWorldPosition(p);
+      el.sceneEl.components['vr-app'].teleport(p, this);
+    });
+  },
+  setHere(on) { this.here = on; this.pillarMat.opacity = on ? 0.06 : 0.22; },
+  tick(t) { this.ring.scale.setScalar(1 + Math.sin(t / 400) * 0.08); }
+});
+
+// 「i」マーク：見つめると解説パネルを開閉
+AFRAME.registerComponent('info-point', {
+  schema: { title: { default: '' }, text: { default: '' }, width: { default: 3.2 } },
+  init() {
+    const el = this.el, d = this.data;
+    const icon = document.createElement('a-entity');
+    icon.setAttribute('geometry', 'primitive: circle; radius: 0.32; segments: 32');
+    icon.setAttribute('material', 'shader: flat; color: #2d7ff9; side: double');
+    icon.classList.add('clickable');
+    icon.setAttribute('hover-grow', '');
+    el.appendChild(icon);
+    const mark = document.createElement('a-entity');
+    mark.setAttribute('position', '0 0 0.01');
+    mark.setAttribute('jp-label', { text: 'i', fontSize: 110, width: 0.34, bg: 'rgba(0,0,0,0)', color: '#ffffff' });
+    icon.appendChild(mark);
+    const panel = document.createElement('a-entity');
+    panel.setAttribute('position', `0 ${0.5} 0`);
+    panel.setAttribute('jp-label', { title: d.title, text: d.text, width: d.width, fontSize: 44, align: 'left', border: '#2d7ff9', maxWidth: 1100 });
+    panel.setAttribute('visible', false);
+    el.appendChild(panel);
+    this.icon = icon; this.panel = panel; this.open = false;
+    icon.addEventListener('click', () => this.toggle());
+    el.sceneEl.addEventListener('info-all', e => this.toggle(e.detail.on));
+  },
+  toggle(force) {
+    this.open = force === undefined ? !this.open : force;
+    this.panel.setAttribute('visible', this.open);
+    // パネルの下端がアイコンの上に来るように
+    const m = this.panel.getObject3D('mesh');
+    if (m) { m.geometry.computeBoundingBox(); const h = m.geometry.boundingBox.max.y; this.panel.object3D.position.y = 0.45 + h; }
+    SOUND.blip(this.open ? 990 : 660);
+  },
+  tick() {
+    // アイコンとパネルをカメラの方向へ向ける
+    const cam = this.el.sceneEl.camera; if (!cam) return;
+    const cp = new THREE.Vector3(), p = new THREE.Vector3();
+    cam.getWorldPosition(cp); this.el.object3D.getWorldPosition(p);
+    this.el.object3D.rotation.y = Math.atan2(cp.x - p.x, cp.z - p.z);
+  }
+});
+
+// メニューのボタン
+AFRAME.registerComponent('ui-button', {
+  schema: { label: { default: '' }, action: { default: '' }, value: { default: '' }, active: { default: false }, w: { default: 0.3 } },
+  init() {
+    this.el.classList.add('clickable');
+    this.el.addEventListener('mouseenter', () => { this.hover = true; this.draw(); });
+    this.el.addEventListener('mouseleave', () => { this.hover = false; this.draw(); });
+    this.el.addEventListener('click', () => {
+      this.el.sceneEl.emit('ui-action', { action: this.data.action, value: this.data.value });
+    });
+  },
+  update() { this.draw(); },
+  draw() {
+    const d = this.data;
+    const bg = d.active ? '#ffb547' : (this.hover ? '#4b6a8f' : 'rgba(29,38,51,0.88)');
+    const c = drawTextCanvas({ text: d.label, fontSize: 50, bg, color: d.active ? '#1d2633' : '#ffffff', border: this.hover ? '#ffffff' : '',
+      fixedWidth: 300, fixedHeight: 150, maxWidth: 300, padding: 14 });
+    const tex = canvasTexture(c, 1, 1); tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+    if (this.mesh) { this.mesh.material.map.dispose(); this.mesh.material.map = tex; this.mesh.material.needsUpdate = true; return; }
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(d.w, d.w / 2), new THREE.MeshBasicMaterial({ map: tex, transparent: true, alphaTest: 0.02, fog: false }));
+    this.el.setObject3D('mesh', this.mesh);
+  }
+});
+
+// 足元メニュー：前を見ている間は顔の向きについてきて、下を見ると止まる
+AFRAME.registerComponent('foot-menu', {
+  init() { this.dir = new THREE.Vector3(); this.yaw = 0; },
+  tick(t, dt) {
+    const camEl = document.getElementById('cam'), cam = this.el.sceneEl.camera; if (!cam || !dt) return;
+    cam.getWorldDirection(this.dir);
+    const pitch = Math.asin(THREE.MathUtils.clamp(this.dir.y, -1, 1));
+    if (pitch > -0.45) {
+      const target = Math.atan2(-this.dir.x, -this.dir.z);
+      let diff = target - this.yaw; diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+      this.yaw += diff * Math.min(1, dt / 250);
+    }
+    const o = this.el.object3D, cp = camEl.object3D.position;
+    o.position.set(cp.x, 0, cp.z);
+    o.rotation.y = this.yaw;
+  }
+});
+
+/* =====================================================================
+   アプリ全体の制御：移動・視点スケール・昼夜・環境音
+   ===================================================================== */
+const SCALES = { ant: 0.06, human: 1, giant: 18 };
+AFRAME.registerComponent('vr-app', {
+  init() {
+    this.state = { scale: 'human', night: false, info: false, sound: true };
+    this.nightT = 0;
+    this.busy = false;
+    this.el.addEventListener('ui-action', e => this.onAction(e.detail));
+    window.vrApp = this;
+    const setup = () => {
+      SOUND.init($id('cam').object3D);
+      this.currentSpot = document.querySelector('[teleport-spot]').components['teleport-spot'];
+      this.currentSpot.setHere(true);
+      if (window.__audioRequested) startAudio();
+    };
+    if (this.el.hasLoaded) setup(); else this.el.addEventListener('loaded', setup);
+  },
+
+  // 暗転しながら瞬間移動（VR酔いを起こしにくい移動方法）
+  blink(fn) {
+    // 暗転中に次の操作が来たら、終わってから順に実行する
+    if (this.busy) { (this.queue = this.queue || []).push(fn); return; }
+    this.busy = true;
+    const m = $id('fade').getObject3D('mesh').material;
+    const start = performance.now(), D = 180;
+    const step = () => {
+      const k = (performance.now() - start) / D;
+      if (k < 1) { m.opacity = k; requestAnimationFrame(step); return; }
+      m.opacity = 1; fn();
+      const s2 = performance.now();
+      const step2 = () => {
+        const k2 = (performance.now() - s2) / (D * 1.4);
+        m.opacity = Math.max(0, 1 - k2);
+        if (k2 < 1) requestAnimationFrame(step2);
+        else { this.busy = false; const next = this.queue && this.queue.shift(); if (next) this.blink(next); }
+      };
+      setTimeout(() => requestAnimationFrame(step2), 80);
+    };
+    step();
+  },
+  teleport(p, spot) {
+    SOUND.blip(740);
+    this.blink(() => {
+      $id('rig').object3D.position.set(p.x, p.y, p.z);
+      $id('cam').object3D.position.x = 0; $id('cam').object3D.position.z = 0;
+      if (this.currentSpot) this.currentSpot.setHere(false);
+      if (spot) { spot.setHere(true); this.currentSpot = spot; }
+    });
+  },
+  setScale(mode) {
+    if (!SCALES[mode]) return;
+    this.blink(() => { $id('rig').object3D.scale.setScalar(SCALES[mode]); });
+    this.state.scale = mode;
+    document.querySelectorAll('[ui-button]').forEach(b => {
+      if (b.getAttribute('ui-button').action === 'scale') b.setAttribute('ui-button', 'active', b.getAttribute('ui-button').value === mode);
+    });
+  },
+  onAction({ action, value }) {
+    SOUND.blip(action === 'scale' ? 520 : 880);
+    if (action === 'scale') this.setScale(value);
+    if (action === 'night') { this.state.night = !this.state.night; this.setBtn('night', this.state.night); }
+    if (action === 'info') { this.state.info = !this.state.info; this.setBtn('info', this.state.info); this.el.emit('info-all', { on: this.state.info }); }
+    if (action === 'sound') { this.state.sound = !this.state.sound; SOUND.setEnabled(this.state.sound); this.setBtn('sound', this.state.sound); }
+  },
+  setBtn(action, on) {
+    document.querySelectorAll('[ui-button]').forEach(b => { if (b.getAttribute('ui-button').action === action) b.setAttribute('ui-button', 'active', on); });
+  },
+  setNightImmediate(on) { this.state.night = on; this.nightT = on ? 1 : 0; NIGHT.apply(this.nightT); this.setBtn('night', on); },
+  tick(t, dt) {
+    if (!dt) return;
+    const target = this.state.night ? 1 : 0;
+    if (Math.abs(this.nightT - target) > 0.001) {
+      this.nightT += Math.sign(target - this.nightT) * Math.min(Math.abs(target - this.nightT), dt / 2000);
+      NIGHT.apply(this.nightT);
+      const fog = this.el.object3D.fog; if (fog) fog.color.copy(lerpColor('#dcebf5', '#1c2a4a', this.nightT));
+    }
+  }
+});
+
+// 立体音響の音源（近づくほど大きく聞こえる）
+AFRAME.registerComponent('sound-source', {
+  schema: { type: { default: 'water' }, refDistance: { default: 3 }, volume: { default: 0.6 } },
+  start() {
+    if (this.audio || !SOUND.listener) return;
+    const a = new THREE.PositionalAudio(SOUND.listener);
+    a.setRefDistance(this.data.refDistance); a.setRolloffFactor(1.6); a.setDistanceModel('inverse');
+    a.setVolume(this.data.volume);
+    if (this.data.type === 'water') { a.setBuffer(SOUND.waterBuffer()); a.setLoop(true); a.play(); }
+    else { a.setBuffer(SOUND.birdBuffer()); this.nextChirp = performance.now() + 1000 + Math.random() * 4000; }
+    this.el.object3D.add(a); this.audio = a;
+  },
+  tick() {
+    if (!this.audio || this.data.type !== 'bird') return;
+    if (performance.now() > this.nextChirp) {
+      if (!this.audio.isPlaying) { this.audio.setPlaybackRate(0.85 + Math.random() * 0.35); this.audio.play(); }
+      this.nextChirp = performance.now() + 3000 + Math.random() * 6000;
+    }
+  }
+});
+
+// スタート画面
+function startAudio() {
+  if (!SOUND.listener) return;
+  SOUND.resume();
+  document.querySelectorAll('[sound-source]').forEach(e => e.components['sound-source'] && e.components['sound-source'].start());
+}
+document.getElementById('start-btn').addEventListener('click', () => {
+  document.getElementById('intro').classList.add('hidden');
+  window.__audioRequested = true;
+  startAudio();
+});
+</script>
+
+<!-- =====================================================================
+     シーン
+     ===================================================================== -->
+<a-scene vr-app shadow="type: pcf" renderer="antialias: true"
+         fog="type: linear; color: #dcebf5; near: 70; far: 280"
+         cursor="rayOrigin: mouse" raycaster="objects: .clickable"
+         loading-screen="dotsColor: #ffb547; backgroundColor: #1d2633">
+
+  <!-- 空・光 -->
+  <a-entity grad-sky></a-entity>
+  <a-entity light="type: hemisphere; color: #dfefff; groundColor: #6b8a4a; intensity: 1.1"
+            day-light="day: 1.1; night: 0.18; dayColor: #dfefff; nightColor: #6f86c8; dayGround: #6b8a4a; nightGround: #1a2233"></a-entity>
+  <a-entity light="type: directional; intensity: 2.2; color: #fff4e0; castShadow: true; shadowMapWidth: 2048; shadowMapHeight: 2048;
+                   shadowCameraLeft: -70; shadowCameraRight: 70; shadowCameraTop: 70; shadowCameraBottom: -70; shadowCameraFar: 300; shadowBias: -0.0005"
+            position="60 90 40" day-light="day: 2.2; night: 0.25; dayColor: #fff4e0; nightColor: #9fb4ff"></a-entity>
+
+  <!-- 地面 -->
+  <a-entity textured-plane="tex: grass; w: 600; h: 600; repeat: 150 150"></a-entity>
+
+  <!-- 広場（スタート地点）と噴水 -->
+  <a-entity position="0 0.02 0" textured-circle="tex: stone; r: 9.5; repeat: 6"></a-entity>
+  <a-entity position="0 0 0">
+    <a-cylinder radius="2.6" height="0.55" position="0 0.27 0" color="#cfc8bb" shadow="cast: true; receive: true"></a-cylinder>
+    <a-cylinder radius="2.3" height="0.05" position="0 0.53 0" color="#4f9ad1" material="roughness: 0.1; metalness: 0.2"></a-cylinder>
+    <a-cylinder radius="0.35" height="1.4" position="0 0.9 0" color="#cfc8bb" shadow="cast: true"></a-cylinder>
+    <a-cylinder radius="0.12" height="1.6" position="0 2.3 0" color="#bfe3ff" material="opacity: 0.7; transparent: true; emissive: #9fd4ff; emissiveIntensity: 0.3"
+                animation="property: scale; from: 1 0.85 1; to: 1 1.1 1; dur: 700; dir: alternate; loop: true; easing: easeInOutSine"></a-cylinder>
+    <a-sphere radius="0.32" position="0 3.1 0" color="#bfe3ff" material="opacity: 0.6; transparent: true"
+              animation="property: position; from: 0 3.0 0; to: 0 3.25 0; dur: 700; dir: alternate; loop: true; easing: easeInOutSine"></a-sphere>
+    <a-entity position="0 1.5 0" sound-source="type: water; refDistance: 2.5; volume: 0.55"></a-entity>
+  </a-entity>
+  <a-entity position="0 3.8 -0.1" info-point="title: 中央広場の噴水; text: 噴水の音は「立体音響」です。|近づくと大きく、離れると小さく聞こえ、|顔の向きで左右の聞こえ方も変わります。"></a-entity>
+
+  <!-- 広場の街灯・ベンチ・植栽 -->
+  <a-entity lamp="light: true" position="6.5 0 6.5"></a-entity>
+  <a-entity lamp="light: true" position="-6.5 0 6.5"></a-entity>
+  <a-entity lamp position="6.5 0 -6.5"></a-entity>
+  <a-entity lamp position="-6.5 0 -6.5"></a-entity>
+  <a-entity lamp position="9 0 0"></a-entity>
+  <a-entity lamp position="-9 0 0"></a-entity>
+  <a-entity position="4.2 0 2.6" rotation="0 -60 0">
+    <a-box width="1.8" height="0.08" depth="0.5" position="0 0.45 0" color="#9a6b43" shadow="cast: true"></a-box>
+    <a-box width="1.8" height="0.4" depth="0.06" position="0 0.7 -0.24" color="#9a6b43" shadow="cast: true"></a-box>
+    <a-box width="0.08" height="0.45" depth="0.45" position="-0.8 0.22 0" color="#3a3f46"></a-box>
+    <a-box width="0.08" height="0.45" depth="0.45" position="0.8 0.22 0" color="#3a3f46"></a-box>
+  </a-entity>
+  <a-entity position="-4.2 0 2.6" rotation="0 60 0">
+    <a-box width="1.8" height="0.08" depth="0.5" position="0 0.45 0" color="#9a6b43" shadow="cast: true"></a-box>
+    <a-box width="1.8" height="0.4" depth="0.06" position="0 0.7 -0.24" color="#9a6b43" shadow="cast: true"></a-box>
+    <a-box width="0.08" height="0.45" depth="0.45" position="-0.8 0.22 0" color="#3a3f46"></a-box>
+    <a-box width="0.08" height="0.45" depth="0.45" position="0.8 0.22 0" color="#3a3f46"></a-box>
+  </a-entity>
+  <a-entity tree="seed: 11; scale: 0.9" position="-8 0 -8"></a-entity>
+  <a-entity tree="seed: 12; scale: 0.9" position="8 0 9"></a-entity>
+  <a-entity tree="seed: 13; scale: 0.8" position="-9.5 0 9"></a-entity>
+
+  <!-- 案内板 -->
+  <a-entity position="-2.7 0 3.4" rotation="0 38 0">
+    <a-box width="0.1" height="1.2" depth="0.1" position="-0.9 0.6 0" color="#3a3f46"></a-box>
+    <a-box width="0.1" height="1.2" depth="0.1" position="0.9 0.6 0" color="#3a3f46"></a-box>
+    <a-entity position="0 1.75 0.06" jp-label="title: VR街あるきへようこそ; text: 光る柱を見つめると移動できます|足元を見るとメニューがあります|蟻・人・巨人の視点を切り替えてみよう; width: 2.1; fontSize: 46; align: left; border: #ffb547; maxWidth: 1100"></a-entity>
+  </a-entity>
+
+  <!-- 道路（街区を囲む環状道路）と横断歩道 -->
+  <a-entity position="-8 0.03 -12" textured-plane="tex: asphalt; w: 51; h: 7; repeat: 12 2; roughness: 0.9"></a-entity>
+  <a-entity position="-8 0.03 -48" textured-plane="tex: asphalt; w: 51; h: 7; repeat: 12 2; roughness: 0.9"></a-entity>
+  <a-entity position="-30 0.032 -30" rotation="0 90 0" textured-plane="tex: asphalt; w: 43; h: 7; repeat: 10 2; roughness: 0.9"></a-entity>
+  <a-entity position="14 0.032 -30" rotation="0 90 0" textured-plane="tex: asphalt; w: 43; h: 7; repeat: 10 2; roughness: 0.9"></a-entity>
+  <a-entity position="-8 0.04 -12" rotation="0 90 0" textured-plane="tex: dash; w: 0.15; h: 37; repeat: 1 12; transparent: true"></a-entity>
+  <a-entity position="-8 0.04 -48" rotation="0 90 0" textured-plane="tex: dash; w: 0.15; h: 37; repeat: 1 12; transparent: true"></a-entity>
+  <a-entity position="-30 0.04 -30" textured-plane="tex: dash; w: 0.15; h: 29; repeat: 1 9; transparent: true"></a-entity>
+  <a-entity position="14 0.04 -30" textured-plane="tex: dash; w: 0.15; h: 29; repeat: 1 9; transparent: true"></a-entity>
+  <a-entity position="0 0.045 -12" textured-plane="tex: zebra; w: 3; h: 6.6; repeat: 7 1; transparent: true"></a-entity>
+
+  <!-- 自律的に走る車（日本と同じ左側通行） -->
+  <a-entity car="color: #d84a3a" path-follow="points: -28.4 -13.6, 12.4 -13.6, 12.4 -46.4, -28.4 -46.4; speed: 7; offset: 0"></a-entity>
+  <a-entity car="color: #f2f2f2" path-follow="points: -28.4 -13.6, 12.4 -13.6, 12.4 -46.4, -28.4 -46.4; speed: 7; offset: 0.33"></a-entity>
+  <a-entity car="color: #2e6fd8" path-follow="points: -28.4 -13.6, 12.4 -13.6, 12.4 -46.4, -28.4 -46.4; speed: 7; offset: 0.66"></a-entity>
+  <a-entity car="color: #f1c232" path-follow="points: -31.6 -10.4, -31.6 -49.6, 15.6 -49.6, 15.6 -10.4; speed: 6; offset: 0.15"></a-entity>
+  <a-entity car="color: #3c3c3c" path-follow="points: -31.6 -10.4, -31.6 -49.6, 15.6 -49.6, 15.6 -10.4; speed: 6; offset: 0.6"></a-entity>
+
+  <!-- ビル街 -->
+  <a-entity city-block="x0: -25; z0: -43; x1: 9; z1: -17; cols: 4; rows: 3; hmin: 8; hmax: 34; seed: 5"></a-entity>
+  <a-entity city-block="x0: -45; z0: -100; x1: 40; z1: -56; cols: 7; rows: 3; hmin: 10; hmax: 48; seed: 9; fill: 0.7"></a-entity>
+  <a-entity city-block="x0: 23; z0: -56; x1: 60; z1: -16; cols: 3; rows: 3; hmin: 8; hmax: 30; seed: 17; fill: 0.7"></a-entity>
+  <a-entity position="-8 40 -30" scale="5 5 5" info-point="title: ビル街; text: 環状道路に囲まれた街区です。|車は経路に沿って自律的に走り続けます|（AIP Cubeの「自律性」）。|巨人の視点で見下ろすと全体がわかります。; width: 3.6"></a-entity>
+
+  <!-- 展望塔（高さ12m） -->
+  <a-entity position="10 0 -2">
+    <a-cylinder radius="0.25" height="12" position="-2 6 -2" color="#8b939c" shadow="cast: true"></a-cylinder>
+    <a-cylinder radius="0.25" height="12" position="2 6 -2" color="#8b939c" shadow="cast: true"></a-cylinder>
+    <a-cylinder radius="0.25" height="12" position="-2 6 2" color="#8b939c" shadow="cast: true"></a-cylinder>
+    <a-cylinder radius="0.25" height="12" position="2 6 2" color="#8b939c" shadow="cast: true"></a-cylinder>
+    <a-cylinder radius="1.2" height="12" position="0 6 0" color="#c9ced4" shadow="cast: true; receive: true"></a-cylinder>
+    <a-box width="5.6" height="0.3" depth="5.6" position="0 12 0" color="#b5bcc4" shadow="cast: true; receive: true"></a-box>
+    <a-box width="5.6" height="1.1" depth="0.08" position="0 12.7 2.8" color="#e7ecf0" material="opacity: 0.55; transparent: true"></a-box>
+    <a-box width="5.6" height="1.1" depth="0.08" position="0 12.7 -2.8" color="#e7ecf0" material="opacity: 0.55; transparent: true"></a-box>
+    <a-box width="0.08" height="1.1" depth="5.6" position="2.8 12.7 0" color="#e7ecf0" material="opacity: 0.55; transparent: true"></a-box>
+    <a-box width="0.08" height="1.1" depth="5.6" position="-2.8 12.7 0" color="#e7ecf0" material="opacity: 0.55; transparent: true"></a-box>
+    <a-box width="5.8" height="0.1" depth="0.16" position="0 13.25 2.8" color="#5d6670"></a-box>
+    <a-box width="5.8" height="0.1" depth="0.16" position="0 13.25 -2.8" color="#5d6670"></a-box>
+    <a-box width="0.16" height="0.1" depth="5.8" position="2.8 13.25 0" color="#5d6670"></a-box>
+    <a-box width="0.16" height="0.1" depth="5.8" position="-2.8 13.25 0" color="#5d6670"></a-box>
+    <a-cone radius-bottom="3.4" radius-top="0.2" height="2.2" position="0 16.4 0" color="#c0504d" shadow="cast: true"></a-cone>
+    <a-cylinder radius="0.08" height="3.2" position="1.6 13.9 1.6" color="#5d6670"></a-cylinder>
+    <a-cylinder radius="0.08" height="3.2" position="-1.6 13.9 -1.6" color="#5d6670"></a-cylinder>
+    <a-cylinder radius="0.08" height="3.2" position="1.6 13.9 -1.6" color="#5d6670"></a-cylinder>
+    <a-cylinder radius="0.08" height="3.2" position="-1.6 13.9 1.6" color="#5d6670"></a-cylinder>
+  </a-entity>
+  <a-entity position="10 4.2 1.4" info-point="title: 展望塔（高さ12m）; text: 塔の上の光る柱を見つめると上れます。|高い所に立つと足がすくむ感覚＝臨場感（Presence）。|苦手な人は無理をせず、すぐ戻りましょう。; width: 3.4"></a-entity>
+
+  <!-- 池とアヒル -->
+  <a-entity position="-16 0 6">
+    <a-circle radius="5.2" rotation="-90 0 0" position="0 0.025 0" color="#4f9ad1" material="roughness: 0.15; metalness: 0.25"></a-circle>
+    <a-torus radius="5.3" radius-tubular="0.22" rotation="-90 0 0" position="0 0.06 0" color="#a69f92" segments-tubular="48"></a-torus>
+    <a-entity animation="property: rotation; to: 0 360 0; dur: 40000; loop: true; easing: linear">
+      <a-entity position="2.8 0.1 0" rotation="0 180 0">
+        <a-sphere radius="0.28" scale="1 0.7 1.3" color="#f5f5f0"></a-sphere>
+        <a-sphere radius="0.14" position="0 0.25 0.25" color="#f5f5f0"></a-sphere>
+        <a-cone radius-bottom="0.05" radius-top="0" height="0.12" position="0 0.24 0.4" rotation="90 0 0" color="#f39c12"></a-cone>
       </a-entity>
-
-      <!-- ピンの真下の影（目印） -->
-      <a-circle rotation="-90 0 0" position="0 0.02 0" radius="0.18" color="#333" opacity="0.4"></a-circle>
-
-      <!-- ラベル -->
-      <a-text value="You are here!" position="0 1.65 0" align="center" color="#FFFFFF" width="3"
-              side="double"></a-text>
+    </a-entity>
+    <a-entity animation="property: rotation; to: 0 -360 0; dur: 55000; loop: true; easing: linear">
+      <a-entity position="-1.6 0.1 1.2">
+        <a-sphere radius="0.24" scale="1 0.7 1.3" color="#d9cdb4"></a-sphere>
+        <a-sphere radius="0.12" position="0 0.22 0.22" color="#6b8f5a"></a-sphere>
+        <a-cone radius-bottom="0.045" radius-top="0" height="0.1" position="0 0.21 0.35" rotation="90 0 0" color="#f39c12"></a-cone>
       </a-entity>
-    </a-marker>
+    </a-entity>
+  </a-entity>
+  <a-entity position="-16 2.2 6" info-point="title: 池のほとり; text: アヒルが自分で泳ぎ回っています。|蟻の視点（高さ約10cm）に切り替えると、|池が湖のように大きく感じられます。; width: 3.4"></a-entity>
 
-    <a-entity camera></a-entity>
-  </a-scene>
+  <!-- 森（公園） -->
+  <a-entity forest="x0: -62; z0: -8; x1: -26; z1: 36; count: 70; seed: 21; clearX: -40; clearZ: 10; clearR: 5"></a-entity>
+  <a-entity forest="x0: -24; z0: 16; x1: 20; z1: 40; count: 26; seed: 33; scale: 1.1"></a-entity>
+  <a-entity position="-40 0 10" sound-source="type: bird; refDistance: 4; volume: 0.5"></a-entity>
+  <a-entity position="-30 4 22" sound-source="type: bird; refDistance: 4; volume: 0.45"></a-entity>
+  <a-entity position="-14 0 12" sound-source="type: bird; refDistance: 3; volume: 0.35"></a-entity>
+  <a-entity position="-40 2.4 6" info-point="title: 森の小道; text: 鳥のさえずりは森の中に配置した音源から|鳴っています。目を閉じても方向がわかるか|試してみてください（聴覚による臨場感）。; width: 3.4"></a-entity>
 
-  <script>
-    // マーカーの検出状態を画面下部に表示する
-    const marker = document.querySelector('#marker');
-    const statusEl = document.querySelector('#status');
-    marker.addEventListener('markerFound', () => {
-      statusEl.textContent = 'マーカー検出中：CGを表示しています';
-      statusEl.classList.add('found');
-    });
-    marker.addEventListener('markerLost', () => {
-      statusEl.textContent = 'マーカーをカメラに映してください';
-      statusEl.classList.remove('found');
-    });
+  <!-- 鳥 -->
+  <a-entity position="-20 0 0">
+    <a-entity circle-fly="radius: 16; speed: 0.3; phase: 0; y: 17">
+      <a-box width="0.9" height="0.05" depth="0.3" position="0.45 0 0" color="#2b2b2b"></a-box>
+      <a-box width="0.9" height="0.05" depth="0.3" position="-0.45 0 0" color="#2b2b2b"></a-box>
+    </a-entity>
+    <a-entity circle-fly="radius: 13; speed: 0.33; phase: 0.6; y: 19">
+      <a-box width="0.8" height="0.05" depth="0.28" position="0.4 0 0" color="#2b2b2b"></a-box>
+      <a-box width="0.8" height="0.05" depth="0.28" position="-0.4 0 0" color="#2b2b2b"></a-box>
+    </a-entity>
+  </a-entity>
 
-    // ボタンでピンの色を切り替える
-    const colors = ['#E53935', '#1E88E5', '#FDD835', '#8E24AA', '#43A047'];
-    let idx = 0;
-    document.querySelector('#colorBtn').addEventListener('click', () => {
-      idx = (idx + 1) % colors.length;
-      document.querySelector('#pinHead').setAttribute('color', colors[idx]);
-      document.querySelector('#pinTip').setAttribute('color', colors[idx]);
-    });
-  </script>
+  <!-- 風車の丘 -->
+  <a-entity position="34 0 24" rotation="0 -50 0">
+    <a-cone radius-bottom="1.6" radius-top="0.7" height="14" position="0 7 0" color="#f3efe6" shadow="cast: true"></a-cone>
+    <a-sphere radius="0.8" position="0 14.2 0.6" color="#d9d2c3"></a-sphere>
+    <a-entity position="0 14.2 1.3" animation="property: rotation; to: 0 0 360; dur: 9000; loop: true; easing: linear">
+      <a-box width="0.6" height="7" depth="0.1" position="0 3.5 0" color="#e9e4d8" shadow="cast: true"></a-box>
+      <a-box width="0.6" height="7" depth="0.1" position="0 -3.5 0" color="#e9e4d8" shadow="cast: true"></a-box>
+      <a-box width="7" height="0.6" depth="0.1" position="3.5 0 0" color="#e9e4d8" shadow="cast: true"></a-box>
+      <a-box width="7" height="0.6" depth="0.1" position="-3.5 0 0" color="#e9e4d8" shadow="cast: true"></a-box>
+    </a-entity>
+  </a-entity>
+  <a-entity position="32 5 20" info-point="title: 風車の丘; text: 風車は止まることなく回り続けます。|人がいなくても世界が動いていることが、|仮想空間の「自律性」を感じさせます。; width: 3.4"></a-entity>
+
+  <!-- 雲 -->
+  <a-entity position="0 55 -60" cloud="seed: 1" drift="speed: 1.5"></a-entity>
+  <a-entity position="-70 62 10" cloud="seed: 2" drift="speed: 1.1"></a-entity>
+  <a-entity position="50 50 40" cloud="seed: 3" drift="speed: 1.3"></a-entity>
+  <a-entity position="-20 70 -120" cloud="seed: 4" drift="speed: 1.0"></a-entity>
+  <a-entity position="90 65 -30" cloud="seed: 5" drift="speed: 1.2"></a-entity>
+
+  <!-- テレポート地点（最初の要素がスタート地点） -->
+  <a-entity position="0 0 7" teleport-spot="name: 中央広場"></a-entity>
+  <a-entity position="-16 0 13.5" teleport-spot="name: 池のほとり"></a-entity>
+  <a-entity position="10 12.15 -2" teleport-spot="name: 展望塔の上"></a-entity>
+  <a-entity position="20 0 -6" teleport-spot="name: 交差点の角"></a-entity>
+  <a-entity position="-40 0 10" teleport-spot="name: 森の小道"></a-entity>
+  <a-entity position="27 0 15" teleport-spot="name: 風車の丘"></a-entity>
+
+  <!-- 利用者（リグ：位置と視点スケールを持つ） -->
+  <a-entity id="rig" position="0 0 7">
+    <a-entity id="cam" camera="near: 0.01; far: 1200" look-controls="pointerLockEnabled: false" wasd-controls="acceleration: 40" position="0 1.6 0">
+      <!-- 視線カーソル（スマホ・VRでは見つめると決定） -->
+      <a-entity cursor raycaster="objects: .clickable; far: 2000" position="0 0 -1"
+                geometry="primitive: ring; radiusInner: 0.012; radiusOuter: 0.019"
+                material="shader: flat; color: #ffffff; opacity: 0.9; transparent: true; depthTest: false"
+                animation__fusing="property: scale; startEvents: fusing; from: 1 1 1; to: 2.4 2.4 2.4; dur: 1500; easing: linear"
+                animation__leave="property: scale; startEvents: mouseleave; to: 1 1 1; dur: 120"
+                animation__click="property: scale; startEvents: click; to: 1 1 1; dur: 120"></a-entity>
+      <!-- 暗転用の球（テレポート時） -->
+      <a-entity id="fade" geometry="primitive: sphere; radius: 0.2" material="shader: flat; color: #000; side: back; transparent: true; opacity: 0; depthTest: false"></a-entity>
+    </a-entity>
+
+    <!-- 足元メニュー -->
+    <a-entity foot-menu>
+      <a-entity position="0 0.72 -0.95" rotation="-55 0 0">
+        <a-entity position="0 0.2 0" jp-label="text: メニュー; width: 0.5; fontSize: 46; bg: rgba(0,0,0,0); color: #ffffff"></a-entity>
+        <a-entity position="-0.34 0.04 0" ui-button="label: 蟻の視点; action: scale; value: ant"></a-entity>
+        <a-entity position="0 0.04 0" ui-button="label: 人の視点; action: scale; value: human; active: true"></a-entity>
+        <a-entity position="0.34 0.04 0" ui-button="label: 巨人の視点; action: scale; value: giant"></a-entity>
+        <a-entity position="-0.34 -0.15 0" ui-button="label: 夜にする; action: night"></a-entity>
+        <a-entity position="0 -0.15 0" ui-button="label: 解説を表示; action: info"></a-entity>
+        <a-entity position="0.34 -0.15 0" ui-button="label: 環境音; action: sound; active: true"></a-entity>
+      </a-entity>
+    </a-entity>
+  </a-entity>
+</a-scene>
 </body>
 </html>
